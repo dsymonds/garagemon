@@ -1,0 +1,61 @@
+<html>
+	<head>
+		<title>garagemon</title>
+		<style type="text/css">
+			* {
+				font-family: Helvetica, sans-serif;
+			}
+			#activate {
+				background: #999;
+				border: 1px solid #555;
+				font-size: 72px;
+				margin: auto;
+				padding: 1em;
+				text-align: center;
+				width: 50%;
+			}
+			#activate.running {
+				background: orange;
+			}
+			#activate.okay {
+				background: green;
+			}
+			#activate.failed {
+				background: red;
+			}
+		</style>
+		<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+	</head>
+
+	<body>
+
+<h1>garagemon</h1>
+Hello there!
+
+<div id="activate">
+	Activate!
+</div>
+
+<script type="text/javascript">
+var button = $("#activate");
+button.click(function() {
+	if (button.hasClass("running")) {
+		return;
+	}
+	button.addClass("running");
+	$.post("/activate", function() {
+		button.addClass("okay");
+	}).fail(function() {
+		button.addClass("failed");
+		// TODO: capture some sort of text response?
+	}).always(function() {
+		button.removeClass("running");
+		setTimeout(function() {
+			button.removeClass(["okay", "failed"]);
+		}, 2000);
+	});
+});
+</script>
+
+	</body>
+</html>
