@@ -18,6 +18,8 @@ import (
 	"time"
 
 	rpio "github.com/stianeikeland/go-rpio/v4"
+	"tailscale.com/client/tailscale"
+	"tailscale.com/tailcfg"
 
 	_ "embed"
 )
@@ -240,19 +242,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	case "/":
-		data := struct {
-			Uptime string
-		}{
-			Uptime: uptime(),
-		}
-		var buf bytes.Buffer
-		if err := frontHTMLTmpl.Execute(&buf, data); err != nil {
-			log.Printf("Executing template: %v", err)
-			http.Error(w, "Internal error executing template: "+err.Error(), 500)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		io.Copy(w, &buf)
+		serveFront(w, r)
 	case "/activate":
 		if r.Method != "POST" {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -261,6 +251,30 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.Activate()
 		io.WriteString(w, "{}")
 	}
+}
+
+func serveFront(w http.ResponseWriter, r *http.Request) {
+	data := struct {
+		Uptime string
+		Peer   *tailcfg.UserProfile // may be nil
+	}{
+		Uptime: uptime(),
+	}
+
+	// See if we can identify the peer.
+	if whois, err := tailscale.WhoIs(r.Context(), r.RemoteAddr); err == nil {
+		data.Peer = whois.UserProfile
+	}
+
+	var buf bytes.Buffer
+	if err := frontHTMLTmpl.Execute(&buf, data); err != nil {
+		log.Printf("Executing template: %v", err)
+		http.Error(w, "Internal error executing template: "+err.Error(), 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	io.Copy(w, &buf)
 }
 
 var startTime = time.Now()

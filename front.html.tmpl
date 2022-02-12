@@ -5,9 +5,17 @@
 			* {
 				font-family: Helvetica, sans-serif;
 			}
+			#peer {
+				float: right;
+				text-align: center;
+				width: 30%;
+			}
 			#activate {
 				background: #999;
 				border: 1px solid #555;
+				border-radius: 2em;
+				clear: right;
+				color: white;
 				font-size: 72px;
 				margin: auto;
 				padding: 1em;
@@ -29,9 +37,19 @@
 
 	<body>
 
+{{with .Peer}}
+<div id="peer">
+<img src="{{.ProfilePicURL}}" /><br />
+{{.DisplayName}} <{{.LoginName}}><br />
+(via Tailscale)
+</div>
+{{end}}
+
 <h1>garagemon</h1>
 
+<p>
 Running for {{.Uptime}}.
+</p>
 
 <div id="activate">
 	Activate!
