@@ -5,8 +5,6 @@ After=multi-user.target
 [Service]
 Type=simple
 
-WorkingDirectory=/home/dsymonds/src/garagemon
-
 # Needed if running as non-root.
 # ExecStartPre=/home/dsymonds/src/garagemon/led-setup.sh
 

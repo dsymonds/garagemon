@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
+	"html/template"
 	"io"
 	"io/ioutil"
 	"log"
@@ -16,6 +18,8 @@ import (
 	"time"
 
 	rpio "github.com/stianeikeland/go-rpio/v4"
+
+	_ "embed"
 )
 
 var (
@@ -236,7 +240,19 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	case "/":
-		http.ServeFile(w, r, "front.html")
+		data := struct {
+			Uptime string
+		}{
+			Uptime: uptime(),
+		}
+		var buf bytes.Buffer
+		if err := frontHTMLTmpl.Execute(&buf, data); err != nil {
+			log.Printf("Executing template: %v", err)
+			http.Error(w, "Internal error executing template: "+err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.Copy(w, &buf)
 	case "/activate":
 		if r.Method != "POST" {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -247,6 +263,19 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+var startTime = time.Now()
+
+func uptime() (s string) {
+	x := time.Since(startTime).Truncate(1 * time.Second)
+	if x > 24*time.Hour {
+		d := x / 24 * time.Hour
+		s += fmt.Sprintf("%d days ", d)
+		x -= d * 24 * time.Hour
+	}
+	s += x.String()
+	return
+}
+
 func (s *server) Activate() {
 	log.Printf("Activating!")
 
@@ -255,3 +284,8 @@ func (s *server) Activate() {
 	s.actionWrite(false)
 	time.Sleep(200 * time.Millisecond)
 }
+
+//go:embed front.html.tmpl
+var frontHTML string
+
+var frontHTMLTmpl = template.Must(template.New("front").Parse(frontHTML))
