@@ -31,3 +31,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable garagemon.service
 sudo systemctl start garagemon.service
 ```
+
+## Tailscale
+
+If using [Tailscale](https://tailscale.com/) on the Raspberry Pi, pass
+`-net_interface=tailscale0` so HTTP is served only on that interface, isolating
+it from the local network.

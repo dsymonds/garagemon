@@ -22,14 +22,23 @@ var (
 	actionPin       = flag.Int("action_pin", 22, "`pin` (raw BCM2835 pinout) for action")
 	actionActiveLow = flag.Bool("action_active_low", false, "whether the action pin is active low")
 
-	ledPath  = flag.String("led_path", "", "`path` to built-in LED; leave empty for no LED")
-	httpFlag = flag.String("http", "localhost:8080", "`address` on which to serve HTTP")
+	ledPath      = flag.String("led_path", "", "`path` to built-in LED; leave empty for no LED")
+	httpFlag     = flag.String("http", "localhost:8080", "`address` on which to serve HTTP")
+	netInterface = flag.String("net_interface", "", "if set, serve HTTP *only* on the named interface")
 )
 
 func main() {
 	flag.Parse()
 	log.Printf("garagemon starting...")
 	time.Sleep(500 * time.Millisecond)
+
+	if *httpFlag != "" && *netInterface != "" {
+		var err error
+		*httpFlag, err = restrictAddrToInterface(*httpFlag, *netInterface)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	s := &server{
 		action: rpio.Pin(*actionPin),
@@ -103,6 +112,50 @@ exit:
 	wg.Wait()
 	s.Shutdown()
 	log.Printf("garagemon done")
+}
+
+func restrictAddrToInterface(origAddr, ifaceName string) (string, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", fmt.Errorf("getting network interfaces: %v", err)
+	}
+	var addrs []net.Addr
+	for _, iface := range ifaces {
+		if iface.Name != ifaceName {
+			continue
+		}
+		addrs, err = iface.Addrs()
+		if err != nil {
+			return "", fmt.Errorf("getting network addresses for interface %q: %v", iface.Name, err)
+		}
+		break
+	}
+	if addrs == nil {
+		return "", fmt.Errorf("unknown or address-free network interface %q", ifaceName)
+	}
+	var ip net.IP
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip = ipn.IP.To4() // pick out the IPv4 address
+		if ip != nil {
+			break
+		}
+	}
+	if ip == nil {
+		return "", fmt.Errorf("network interface %q does not have any IPv4 addresses", ifaceName)
+	}
+
+	_, port, err := net.SplitHostPort(origAddr)
+	if err != nil {
+		return "", fmt.Errorf("splitting %q: %v", origAddr, err)
+	}
+	addr := net.JoinHostPort(ip.String(), port)
+
+	log.Printf("Restricted %q to interface %q as %q", origAddr, ifaceName, addr)
+	return addr, nil
 }
 
 type server struct {

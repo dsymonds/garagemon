@@ -16,6 +16,7 @@ WorkingDirectory=/home/dsymonds/src/garagemon
 # https://www.waveshare.com/wiki/RPi_Relay_Board
 ExecStart=/home/dsymonds/src/garagemon/garagemon \
   -http=:80 \
+  -net_interface=tailscale0 \
   -led_path=/sys/class/leds/led0 \
   -action_pin=26 \
   -action_active_low
