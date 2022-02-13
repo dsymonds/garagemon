@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -258,7 +259,7 @@ func serveFront(w http.ResponseWriter, r *http.Request) {
 		Uptime string
 		Peer   *tailcfg.UserProfile // may be nil
 	}{
-		Uptime: uptime(),
+		Uptime: uptime(time.Since(startTime)),
 	}
 
 	// See if we can identify the peer.
@@ -279,15 +280,36 @@ func serveFront(w http.ResponseWriter, r *http.Request) {
 
 var startTime = time.Now()
 
-func uptime() (s string) {
-	x := time.Since(startTime).Truncate(1 * time.Second)
-	if x > 24*time.Hour {
-		d := x / 24 * time.Hour
-		s += fmt.Sprintf("%d days ", d)
-		x -= d * 24 * time.Hour
+var timeUnits = []struct {
+	u time.Duration
+	s string
+}{
+	// These must be in decreasing order.
+	{24 * time.Hour, "d"},
+	{time.Hour, "h"},
+	{time.Minute, "m"},
+	{time.Second, "s"},
+}
+
+func uptime(x time.Duration) string {
+	// Different to x.String() to make it more human.
+	// Render the first two non-zero units from timeUnits.
+	if x <= 0 {
+		return "0"
 	}
-	s += x.String()
-	return
+	var parts []string
+	for _, tu := range timeUnits {
+		if x < tu.u && len(parts) == 0 {
+			continue
+		}
+		n := x / tu.u
+		parts = append(parts, fmt.Sprintf("%d%s", n, tu.s))
+		x -= n * tu.u
+		if len(parts) == 2 {
+			break
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 func (s *server) Activate() {
