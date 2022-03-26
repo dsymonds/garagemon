@@ -28,6 +28,7 @@ import (
 var (
 	actionPin       = flag.Int("action_pin", 22, "`pin` (raw BCM2835 pinout) for action")
 	actionActiveLow = flag.Bool("action_active_low", false, "whether the action pin is active low")
+	blinkLED        = flag.Bool("blink_led", true, "whether to background blink the LED")
 
 	ledPath      = flag.String("led_path", "", "`path` to built-in LED; leave empty for no LED")
 	httpFlag     = flag.String("http", "localhost:8080", "`address` on which to serve HTTP")
@@ -108,11 +109,13 @@ func main() {
 	time.Sleep(1 * time.Second)
 
 	// Background blinking light.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		s.Blink(ctx)
-	}()
+	if *blinkLED {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.Blink(ctx)
+		}()
+	}
 
 exit:
 	<-ctx.Done()
