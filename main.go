@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"embed"
 	"flag"
 	"fmt"
 	"html/template"
@@ -21,8 +22,6 @@ import (
 	rpio "github.com/stianeikeland/go-rpio/v4"
 	"tailscale.com/client/tailscale"
 	"tailscale.com/tailcfg"
-
-	_ "embed"
 )
 
 var (
@@ -56,6 +55,7 @@ func main() {
 		log.Fatal(err)
 	}
 	http.Handle("/", s)
+	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFiles))))
 
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
@@ -328,3 +328,6 @@ func (s *server) Activate() {
 var frontHTML string
 
 var frontHTMLTmpl = template.Must(template.New("front").Parse(frontHTML))
+
+//go:embed *.png
+var staticFiles embed.FS
