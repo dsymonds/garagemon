@@ -12,6 +12,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.0 // indirect
 	github.com/akutz/memconn v0.1.0 // indirect
 	github.com/alexbrainman/sspi v0.0.0-20210105120005-909beea2cc74 // indirect
+	github.com/dsymonds/netutil v0.0.0-20230219232428-f909d80c3aa6 // indirect
 	github.com/fxamacker/cbor/v2 v2.4.0 // indirect
 	github.com/google/go-cmp v0.5.8 // indirect
 	github.com/hdevalence/ed25519consensus v0.0.0-20220222234857-c00d1f31bab3 // indirect
