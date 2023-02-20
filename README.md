@@ -11,6 +11,20 @@ My specific hardware:
    * 3 Channel Relay Module Shield Smart Home for Raspberry Pi (Waveshare)
    * Aussie Openers 800N
 
+To configure for that, fill in a `garagemon.yaml` file like this:
+
+```yaml
+mode: hardware
+
+hardware:
+  action_pin: 26
+  action_active_low: true
+  led_path: /sys/class/leds/led0
+  blink_led: true
+```
+
+See `main.go:Config` for documentation on the structure and details.
+
 ## Manual use
 
 If the program breaks like

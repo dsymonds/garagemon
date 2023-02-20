@@ -21,22 +21,55 @@ import (
 
 	"github.com/dsymonds/netutil"
 	rpio "github.com/stianeikeland/go-rpio/v4"
+	"gopkg.in/yaml.v2"
 	"tailscale.com/client/tailscale"
 	"tailscale.com/tailcfg"
 )
 
 var (
-	actionPin       = flag.Int("action_pin", 22, "`pin` (raw BCM2835 pinout) for action")
-	actionActiveLow = flag.Bool("action_active_low", false, "whether the action pin is active low")
-	blinkLED        = flag.Bool("blink_led", true, "whether to background blink the LED")
-
-	ledPath      = flag.String("led_path", "", "`path` to built-in LED; leave empty for no LED")
+	configFile   = flag.String("config_file", "garagemon.yaml", "configuration `filename`")
 	httpFlag     = flag.String("http", "localhost:8080", "`address` on which to serve HTTP")
 	netInterface = flag.String("net_interface", "", "if set, serve HTTP *only* on the named interface")
 )
 
+var _ = yaml.Unmarshal
+
+type Config struct {
+	// Mode is one of "hardware" or "hubitat".
+	//
+	// Hardware mode is where this is running on a Raspberry Pi with a GPIO-controlled relay
+	// for the garage door activation.
+	//
+	// Hubitat mode is where this is running somewhere and can talk to a Hubitat instance
+	// with the Maker API enabled, and a configured device that can activate the garage door.
+	//
+	// Only "hardware" works right now.
+	Mode string `yaml:"mode"`
+
+	Hardware struct {
+		ActionPin       int    `yaml:"action_pin"`        // pin (raw BCM2835 pinout) for action
+		ActionActiveLow bool   `yaml:"action_active_low"` // whether the action pin is active low
+		LEDPath         string `yaml:"led_path"`          // path to built-in LED; leave empty for no LED
+		BlinkLED        bool   `yaml:"blink_led"`         // whether to background blink the LED
+	} `yaml:"hardware"`
+
+	Hubitat struct {
+		// TODO
+	} `yaml:"hubitat"`
+}
+
 func main() {
 	flag.Parse()
+
+	var config Config
+	configRaw, err := ioutil.ReadFile(*configFile)
+	if err != nil {
+		log.Fatalf("Reading config file %s: %v", *configFile, err)
+	}
+	if err := yaml.UnmarshalStrict(configRaw, &config); err != nil {
+		log.Fatalf("Parsing config from %s: %v", *configFile, err)
+	}
+
 	log.Printf("garagemon starting...")
 	time.Sleep(500 * time.Millisecond)
 
@@ -49,11 +82,8 @@ func main() {
 		*httpFlag = addr
 	}
 
-	s := &server{
-		action: rpio.Pin(*actionPin),
-		led:    *ledPath,
-	}
-	if err := s.Init(); err != nil {
+	s, err := NewServer(config)
+	if err != nil {
 		log.Fatal(err)
 	}
 	http.Handle("/", s)
@@ -111,7 +141,8 @@ func main() {
 	time.Sleep(1 * time.Second)
 
 	// Background blinking light.
-	if *blinkLED {
+	// TODO: This is now poorly layered.
+	if config.Mode == "hardware" && config.Hardware.BlinkLED {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -127,32 +158,45 @@ exit:
 }
 
 type server struct {
+	cfg Config
+
+	// hardware mode only
 	action rpio.Pin
-	led    string // path like "/sys/class/leds/led0"
 }
 
-func (s *server) Init() error {
-	if err := rpio.Open(); err != nil {
-		return fmt.Errorf("opening memory range for GPIO access: %v", err)
+func NewServer(cfg Config) (*server, error) {
+	s := &server{
+		cfg: cfg,
 	}
-	s.action.Output()
-	s.actionWrite(false)
+	if cfg.Mode == "hardware" {
+		s.action = rpio.Pin(cfg.Hardware.ActionPin)
 
-	// Enable manual control of built-in LED.
-	if err := s.ledWrite("trigger", "gpio"); err != nil {
-		return fmt.Errorf("setting up manual control of built-in LED: %w", err)
+		if err := rpio.Open(); err != nil {
+			return nil, fmt.Errorf("opening memory range for GPIO access: %v", err)
+		}
+		s.action.Output()
+		s.actionWrite(false)
+
+		// Enable manual control of built-in LED.
+		if err := s.ledWrite("trigger", "gpio"); err != nil {
+			return nil, fmt.Errorf("setting up manual control of built-in LED: %w", err)
+		}
+	} else {
+		return nil, fmt.Errorf("unsupported mode %q", cfg.Mode)
 	}
 
-	return nil
+	return s, nil
 }
 
 func (s *server) Shutdown() {
-	s.actionWrite(false)
-	rpio.Close()
+	if s.cfg.Mode == "hardware" {
+		s.actionWrite(false)
+		rpio.Close()
+	}
 }
 
 func (s *server) actionWrite(active bool) {
-	if *actionActiveLow {
+	if s.cfg.Hardware.ActionActiveLow {
 		active = !active
 	}
 	if active {
@@ -163,10 +207,10 @@ func (s *server) actionWrite(active bool) {
 }
 
 func (s *server) ledWrite(file, contents string) error {
-	if s.led == "" {
+	if s.cfg.Mode != "hardware" || s.cfg.Hardware.LEDPath == "" {
 		return nil
 	}
-	full := filepath.Join(s.led, file)
+	full := filepath.Join(s.cfg.Hardware.LEDPath, file)
 	return ioutil.WriteFile(full, []byte(contents), 0666)
 }
 
@@ -204,7 +248,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	case "/":
-		serveFront(w, r)
+		s.serveFront(w, r)
 	case "/activate":
 		if r.Method != "POST" {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -215,12 +259,14 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func serveFront(w http.ResponseWriter, r *http.Request) {
+func (s *server) serveFront(w http.ResponseWriter, r *http.Request) {
 	data := struct {
 		Uptime string
+		Config Config
 		Peer   *tailcfg.UserProfile // may be nil
 	}{
 		Uptime: uptime(time.Since(startTime)),
+		Config: s.cfg,
 	}
 
 	// See if we can identify the peer.

@@ -8,16 +8,11 @@ Type=simple
 # Needed if running as non-root.
 # ExecStartPre=/home/dsymonds/src/garagemon/led-setup.sh
 
-# This configuration works with the 3 Channel Relay Module Shield Smart Home for Raspberry Pi
-# using channel 1 for the action with NO (Normally Open) wiring, on a Pi Zero W.
-#
-# https://www.waveshare.com/wiki/RPi_Relay_Board
+WorkingDirectory=/home/dsymonds/src/garagemon
 ExecStart=/home/dsymonds/src/garagemon/garagemon \
+  -config_file=garagemon.yaml \
   -http=:80 \
-  -net_interface=tailscale0 \
-  -led_path=/sys/class/leds/led0 \
-  -action_pin=26 \
-  -action_active_low
+  -net_interface=tailscale0
 
 Restart=always
 RestartSec=10
