@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
@@ -12,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -32,8 +34,6 @@ var (
 	netInterface = flag.String("net_interface", "", "if set, serve HTTP *only* on the named interface")
 )
 
-var _ = yaml.Unmarshal
-
 type Config struct {
 	// Mode is one of "hardware" or "hubitat".
 	//
@@ -42,8 +42,6 @@ type Config struct {
 	//
 	// Hubitat mode is where this is running somewhere and can talk to a Hubitat instance
 	// with the Maker API enabled, and a configured device that can activate the garage door.
-	//
-	// Only "hardware" works right now.
 	Mode string `yaml:"mode"`
 
 	Hardware struct {
@@ -54,7 +52,10 @@ type Config struct {
 	} `yaml:"hardware"`
 
 	Hubitat struct {
-		// TODO
+		MakerAPI    string `yaml:"maker_api"` // e.g. http://1.2.3.4/apps/api/3/devices
+		AccessToken string `yaml:"access_token"`
+		Device      int    `yaml:"device"`  // Hubitat device number
+		Command     string `yaml:"command"` // whatever command to send the device (probably "on")
 	} `yaml:"hubitat"`
 }
 
@@ -168,7 +169,8 @@ func NewServer(cfg Config) (*server, error) {
 	s := &server{
 		cfg: cfg,
 	}
-	if cfg.Mode == "hardware" {
+	switch cfg.Mode {
+	case "hardware":
 		s.action = rpio.Pin(cfg.Hardware.ActionPin)
 
 		if err := rpio.Open(); err != nil {
@@ -181,7 +183,27 @@ func NewServer(cfg Config) (*server, error) {
 		if err := s.ledWrite("trigger", "gpio"); err != nil {
 			return nil, fmt.Errorf("setting up manual control of built-in LED: %w", err)
 		}
-	} else {
+	case "hubitat":
+		// Check commands for device to verify configuration.
+		var resp []struct {
+			Command string `json:"command"`
+		}
+		err := s.hubitatGET("/commands", &resp)
+		if err != nil {
+			return nil, fmt.Errorf("hubitat self-check: %w", err)
+		}
+		var ok bool
+		for _, cmd := range resp {
+			if cmd.Command == cfg.Hubitat.Command {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil, fmt.Errorf("hubitat self-check: no command %q supported by device", cfg.Hubitat.Command)
+		}
+		log.Printf("Hubitat self-check OK: device %d supports command %q", cfg.Hubitat.Device, cfg.Hubitat.Command)
+	default:
 		return nil, fmt.Errorf("unsupported mode %q", cfg.Mode)
 	}
 
@@ -193,6 +215,39 @@ func (s *server) Shutdown() {
 		s.actionWrite(false)
 		rpio.Close()
 	}
+}
+
+func (s *server) hubitatGET(path string, dst interface{}) error {
+	if s.cfg.Mode != "hubitat" {
+		// This shouldn't be reached, but fail cleanly if it does.
+		return fmt.Errorf("garagemon is not running in hubitat mode")
+	}
+	u := s.cfg.Hubitat.MakerAPI + fmt.Sprintf("/%d", s.cfg.Hubitat.Device) + path + "?access_token=" + url.QueryEscape(s.cfg.Hubitat.AccessToken)
+
+	// TODO: Provide a context instead?
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return fmt.Errorf("internal error: constructing http request to hubitat: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetching from hubitat: %w", err)
+	}
+	raw, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return fmt.Errorf("reading hubitat response body: %w", err)
+	}
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("non-200 response from hubitat: %s", resp.Status)
+	}
+	if err := json.Unmarshal(raw, dst); err != nil {
+		return fmt.Errorf("decoding JSON response from hubitat: %w", err)
+	}
+	return nil
 }
 
 func (s *server) actionWrite(active bool) {
@@ -254,8 +309,20 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return
 		}
-		s.Activate()
-		io.WriteString(w, "{}")
+		var resp struct {
+			Error string `json:"error,omitempty"`
+		}
+		if err := s.Activate(); err != nil {
+			resp.Error = err.Error()
+		}
+		b, err := json.Marshal(resp)
+		if err != nil {
+			// This shouldn't happen!
+			http.Error(w, "internal error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content/Type", "application/json; charset=utf-8")
+		w.Write(b)
 	}
 }
 
@@ -273,6 +340,8 @@ func (s *server) serveFront(w http.ResponseWriter, r *http.Request) {
 	if whois, err := tailscale.WhoIs(r.Context(), r.RemoteAddr); err == nil {
 		data.Peer = whois.UserProfile
 	}
+
+	// TODO: For Hubitat, pull device info and events.
 
 	var buf bytes.Buffer
 	if err := frontHTMLTmpl.Execute(&buf, data); err != nil {
@@ -319,13 +388,28 @@ func uptime(x time.Duration) string {
 	return strings.Join(parts, "")
 }
 
-func (s *server) Activate() {
+func (s *server) Activate() error {
 	log.Printf("Activating!")
 
-	s.actionWrite(true)
-	time.Sleep(500 * time.Millisecond)
-	s.actionWrite(false)
-	time.Sleep(200 * time.Millisecond)
+	switch s.cfg.Mode {
+	case "hardware":
+		s.actionWrite(true)
+		time.Sleep(500 * time.Millisecond)
+		s.actionWrite(false)
+		time.Sleep(200 * time.Millisecond)
+		return nil // No error reporting for hardware.
+	case "hubitat":
+		var resp struct {
+			// There isn't much interesting to report.
+		}
+		err := s.hubitatGET("/"+url.PathEscape(s.cfg.Hubitat.Command), &resp)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
+	panic("unreachable")
 }
 
 //go:embed front.html.tmpl
