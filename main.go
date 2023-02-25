@@ -23,6 +23,7 @@ import (
 
 	"github.com/dsymonds/netutil"
 	rpio "github.com/stianeikeland/go-rpio/v4"
+	"golang.org/x/net/trace"
 	"gopkg.in/yaml.v2"
 	"tailscale.com/client/tailscale"
 	"tailscale.com/tailcfg"
@@ -61,6 +62,10 @@ type Config struct {
 
 func main() {
 	flag.Parse()
+
+	trace.AuthRequest = func(req *http.Request) (any, sensitive bool) {
+		return true, true
+	}
 
 	var config Config
 	configRaw, err := ioutil.ReadFile(*configFile)
@@ -188,7 +193,7 @@ func NewServer(cfg Config) (*server, error) {
 		var resp []struct {
 			Command string `json:"command"`
 		}
-		err := s.hubitatGET("/commands", &resp)
+		err := s.hubitatGET(context.Background(), "/commands", &resp)
 		if err != nil {
 			return nil, fmt.Errorf("hubitat self-check: %w", err)
 		}
@@ -217,18 +222,26 @@ func (s *server) Shutdown() {
 	}
 }
 
-func (s *server) hubitatGET(path string, dst interface{}) error {
+func (s *server) hubitatGET(ctx context.Context, path string, dst interface{}) (err error) {
+	defer func() {
+		if err != nil {
+			tracef(ctx, "hubitatGET: %v", err)
+		}
+	}()
+
 	if s.cfg.Mode != "hubitat" {
 		// This shouldn't be reached, but fail cleanly if it does.
+		tracef(ctx, "Hubitat GET when not in Hubitat mode")
 		return fmt.Errorf("garagemon is not running in hubitat mode")
 	}
-	u := s.cfg.Hubitat.MakerAPI + fmt.Sprintf("/%d", s.cfg.Hubitat.Device) + path + "?access_token=" + url.QueryEscape(s.cfg.Hubitat.AccessToken)
+	u := s.cfg.Hubitat.MakerAPI + fmt.Sprintf("/%d", s.cfg.Hubitat.Device) + path + "?access_token="
+	tracef(ctx, "Hitting %s<REDACTED>", u)
 
-	// TODO: Provide a context instead?
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// Bound how long we spend.
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", u+url.QueryEscape(s.cfg.Hubitat.AccessToken), nil)
 	if err != nil {
 		return fmt.Errorf("internal error: constructing http request to hubitat: %w", err)
 	}
@@ -241,6 +254,7 @@ func (s *server) hubitatGET(path string, dst interface{}) error {
 	if err != nil {
 		return fmt.Errorf("reading hubitat response body: %w", err)
 	}
+	tracef(ctx, "Raw response: %s", raw)
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("non-200 response from hubitat: %s", resp.Status)
 	}
@@ -312,7 +326,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var resp struct {
 			Error string `json:"error,omitempty"`
 		}
-		if err := s.Activate(); err != nil {
+		if err := s.Activate(r.Context()); err != nil {
 			resp.Error = err.Error()
 		}
 		b, err := json.Marshal(resp)
@@ -388,21 +402,27 @@ func uptime(x time.Duration) string {
 	return strings.Join(parts, "")
 }
 
-func (s *server) Activate() error {
+func (s *server) Activate(ctx context.Context) error {
+	tr := trace.New("Activation", "")
+	defer tr.Finish()
+	ctx = trace.NewContext(ctx, tr)
+
 	log.Printf("Activating!")
 
 	switch s.cfg.Mode {
 	case "hardware":
+		tr.LazyPrintf("Hardware action: pulsing relay...")
 		s.actionWrite(true)
 		time.Sleep(500 * time.Millisecond)
 		s.actionWrite(false)
 		time.Sleep(200 * time.Millisecond)
 		return nil // No error reporting for hardware.
 	case "hubitat":
+		tr.LazyPrintf("Hubitat action...")
 		var resp struct {
 			// There isn't much interesting to report.
 		}
-		err := s.hubitatGET("/"+url.PathEscape(s.cfg.Hubitat.Command), &resp)
+		err := s.hubitatGET(ctx, "/"+url.PathEscape(s.cfg.Hubitat.Command), &resp)
 		if err != nil {
 			return err
 		}
@@ -419,3 +439,11 @@ var frontHTMLTmpl = template.Must(template.New("front").Parse(frontHTML))
 
 //go:embed *.png
 var staticFiles embed.FS
+
+func tracef(ctx context.Context, format string, args ...interface{}) {
+	tr, ok := trace.FromContext(ctx)
+	if !ok {
+		return
+	}
+	tr.LazyPrintf(format, args...)
+}

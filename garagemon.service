@@ -8,10 +8,10 @@ Type=simple
 # Needed if running as non-root.
 # ExecStartPre=/home/dsymonds/src/garagemon/led-setup.sh
 
-WorkingDirectory=/home/dsymonds/src/garagemon
-ExecStart=/home/dsymonds/src/garagemon/garagemon \
+WorkingDirectory=/volume1/mon
+ExecStart=/volume1/mon/bin/garagemon.arm \
   -config_file=garagemon.yaml \
-  -http=:80 \
+  -http=:7000 \
   -net_interface=tailscale0
 
 Restart=always
