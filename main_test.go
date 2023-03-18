@@ -11,6 +11,8 @@ func TestRoughDuration(t *testing.T) {
 		want string
 	}{
 		{0, "0"},
+		{-5 * time.Second, "0"}, // edge case for clock skew
+		{3 * time.Millisecond, "0"},
 		{10 * time.Second, "10s"},
 		{45*time.Minute + 21*time.Second + 150*time.Millisecond, "45m21s"},
 		{3*time.Hour + 21*time.Second, "3h0m"},

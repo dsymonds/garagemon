@@ -427,6 +427,10 @@ func roughDuration(x time.Duration) string {
 			break
 		}
 	}
+	if len(parts) == 0 {
+		// x is smaller than the smallest unit we report.
+		return "0"
+	}
 	return strings.Join(parts, "")
 }
 
