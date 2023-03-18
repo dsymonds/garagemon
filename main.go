@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,8 @@ var (
 	configFile   = flag.String("config_file", "garagemon.yaml", "configuration `filename`")
 	httpFlag     = flag.String("http", "localhost:8080", "`address` on which to serve HTTP")
 	netInterface = flag.String("net_interface", "", "if set, serve HTTP *only* on the named interface")
+
+	noop = flag.Bool("noop", false, "whether activation should do nothing")
 )
 
 type Config struct {
@@ -57,6 +60,8 @@ type Config struct {
 		AccessToken string `yaml:"access_token"`
 		Device      int    `yaml:"device"`  // Hubitat device number
 		Command     string `yaml:"command"` // whatever command to send the device (probably "on")
+
+		AdditionalDevices []int `yaml:"additional_devices"` // Any other devices whose events should be pulled
 	} `yaml:"hubitat"`
 }
 
@@ -193,7 +198,7 @@ func NewServer(cfg Config) (*server, error) {
 		var resp []struct {
 			Command string `json:"command"`
 		}
-		err := s.hubitatGET(context.Background(), "/commands", &resp)
+		err := s.hubitatGET(context.Background(), s.cfg.Hubitat.Device, "/commands", &resp)
 		if err != nil {
 			return nil, fmt.Errorf("hubitat self-check: %w", err)
 		}
@@ -222,7 +227,7 @@ func (s *server) Shutdown() {
 	}
 }
 
-func (s *server) hubitatGET(ctx context.Context, path string, dst interface{}) (err error) {
+func (s *server) hubitatGET(ctx context.Context, device int, path string, dst interface{}) (err error) {
 	defer func() {
 		if err != nil {
 			tracef(ctx, "hubitatGET: %v", err)
@@ -234,7 +239,7 @@ func (s *server) hubitatGET(ctx context.Context, path string, dst interface{}) (
 		tracef(ctx, "Hubitat GET when not in Hubitat mode")
 		return fmt.Errorf("garagemon is not running in hubitat mode")
 	}
-	u := s.cfg.Hubitat.MakerAPI + fmt.Sprintf("/%d", s.cfg.Hubitat.Device) + path + "?access_token="
+	u := s.cfg.Hubitat.MakerAPI + fmt.Sprintf("/%d", device) + path + "?access_token="
 	tracef(ctx, "Hitting %s<REDACTED>", u)
 
 	// Bound how long we spend.
@@ -337,6 +342,29 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content/Type", "application/json; charset=utf-8")
 		w.Write(b)
+	case "/events":
+		var resp struct {
+			Recent bool    `json:"recent"` // whether there was any recent event
+			Events []Event `json:"events,omitempty"`
+			Error  string  `json:"error,omitempty"`
+		}
+		events, err := s.Events(r.Context())
+		if err == nil {
+			resp.Events = events
+			if len(events) > 0 {
+				resp.Recent = time.Since(time.Time(events[0].Date)) < 1*time.Minute
+			}
+		} else {
+			resp.Error = err.Error()
+		}
+		b, err := json.Marshal(resp)
+		if err != nil {
+			// This shouldn't happen!
+			http.Error(w, "internal error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content/Type", "application/json; charset=utf-8")
+		w.Write(b)
 	}
 }
 
@@ -346,7 +374,7 @@ func (s *server) serveFront(w http.ResponseWriter, r *http.Request) {
 		Config Config
 		Peer   *tailcfg.UserProfile // may be nil
 	}{
-		Uptime: uptime(time.Since(startTime)),
+		Uptime: roughDuration(time.Since(startTime)),
 		Config: s.cfg,
 	}
 
@@ -381,7 +409,7 @@ var timeUnits = []struct {
 	{time.Second, "s"},
 }
 
-func uptime(x time.Duration) string {
+func roughDuration(x time.Duration) string {
 	// Different to x.String() to make it more human.
 	// Render the first two non-zero units from timeUnits.
 	if x <= 0 {
@@ -409,6 +437,11 @@ func (s *server) Activate(ctx context.Context) error {
 
 	log.Printf("Activating!")
 
+	if *noop {
+		tr.LazyPrintf("No-op activation")
+		return nil
+	}
+
 	switch s.cfg.Mode {
 	case "hardware":
 		tr.LazyPrintf("Hardware action: pulsing relay...")
@@ -422,7 +455,7 @@ func (s *server) Activate(ctx context.Context) error {
 		var resp struct {
 			// There isn't much interesting to report.
 		}
-		err := s.hubitatGET(ctx, "/"+url.PathEscape(s.cfg.Hubitat.Command), &resp)
+		err := s.hubitatGET(ctx, s.cfg.Hubitat.Device, "/"+url.PathEscape(s.cfg.Hubitat.Command), &resp)
 		if err != nil {
 			return err
 		}
@@ -430,6 +463,49 @@ func (s *server) Activate(ctx context.Context) error {
 	}
 
 	panic("unreachable")
+}
+
+type Event struct {
+	DeviceID string  `json:"device_id"`
+	Label    string  `json:"label"`
+	Name     string  `json:"name"`  // e.g. "command-on", "switch"
+	Value    *string `json:"value"` // e.g. "on" or "off" for switch (nullable)
+	Date     hubTime `json:"date"`
+	// TODO: Do we care about isStateChange, source?
+
+	Ago string `json:"ago"`
+}
+
+func (s *server) Events(ctx context.Context) ([]Event, error) {
+	tr := trace.New("Activation", "")
+	defer tr.Finish()
+	ctx = trace.NewContext(ctx, tr)
+
+	if s.cfg.Mode != "hubitat" {
+		return nil, nil
+	}
+
+	var allEvents []Event
+	now := time.Now()
+	for _, dev := range append([]int{s.cfg.Hubitat.Device}, s.cfg.Hubitat.AdditionalDevices...) {
+		var elist []Event
+		err := s.hubitatGET(ctx, dev, "/events", &elist)
+		if err != nil {
+			return nil, fmt.Errorf("querying Hubitat for events for device %d: %w", dev, err)
+		}
+		for i := range elist {
+			elist[i].Ago = roughDuration(now.Sub(time.Time(elist[i].Date)))
+		}
+		allEvents = append(allEvents, elist...)
+	}
+
+	// Return the most recent subset of events.
+	const max = 20
+	sort.Slice(allEvents, func(i, j int) bool { return time.Time(allEvents[i].Date).After(time.Time(allEvents[j].Date)) })
+	if len(allEvents) > max {
+		allEvents = allEvents[:max]
+	}
+	return allEvents, nil
 }
 
 //go:embed front.html.tmpl
@@ -446,4 +522,22 @@ func tracef(ctx context.Context, format string, args ...interface{}) {
 		return
 	}
 	tr.LazyPrintf(format, args...)
+}
+
+type hubTime time.Time
+
+func (ht *hubTime) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+
+	// Observed in the form "2023-03-04T06:33:15+0000",
+	// which isn't RFC3339, so the time.Time unmarshaler doesn't work.
+	t, err := time.Parse("2006-01-02T15:04:05-0700", s)
+	if err != nil {
+		return err
+	}
+	*ht = hubTime(t)
+	return nil
 }

@@ -37,6 +37,16 @@
 				color: red;
 				text-align: center;
 			}
+			table#events {
+				font-size: x-large;
+				margin-top: 1em;
+			}
+			table#events td {
+				padding: 0 1em;
+			}
+			table#events td.ago {
+				text-align: right;
+			}
 		</style>
 		<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
 	</head>
@@ -61,21 +71,37 @@ Running for {{.Uptime}} in <em>{{.Config.Mode}}</em> mode.
 	Activate!
 </div>
 
-<h3 id="error" style="display: none;" />
+<h3 id="error" style="display: none;"></h3>
+
+<table id="events">
+	<tr>
+		<th>Ago</th><th>Device</th><th>Action</th>
+	</tr>
+	<tr class="event">
+		<td colspan=3 style="text-align: center;">Data loading...</td>
+	</tr>
+</table>
 
 <script type="text/javascript">
+function showError(message) {
+	$("#error").text(message);
+	$("#error").show();
+}
+
+var nextRefresh = Date.now();  // Initially due for a refresh.
+
 var button = $("#activate");
 button.click(function() {
 	if (button.hasClass("running")) {
 		return;
 	}
 	button.addClass("running");
-	$("#error").show();
+	$("#error").show();  // TODO: should this be hiding it?
+	nextRefresh = Date.now() + 4*1000;  // get new events in 4s
 	$.post("/activate", function(data) {
 		if ("error" in data) {
 			button.addClass("failed");
-			$("#error").text(data.error);
-			$("#error").show();
+			showError(data.error);
 		} else {
 			button.addClass("okay");
 		}
@@ -89,6 +115,49 @@ button.click(function() {
 		}, 2000);
 	});
 });
+
+function refreshEvents() {
+	var now = Date.now();
+	if (now < nextRefresh) {
+		//console.log("waiting for " + (nextRefresh-now)/1000 + "s for next refresh")
+		return;
+	}
+
+	$.getJSON("/events", function(data) {
+		if ("error" in data) {
+			// TODO: Failures here and above will be fighting over the error text.
+			showError(data.error);
+			nextRefresh = now + 5*1000;  // Try again in 5s.
+			return;
+		}
+
+		// Refresh again, either in 5s if there was a recent event (since events cluster),
+		// or in 30s.
+		nextRefresh = now + (data.recent ? 5*1000 : 30*1000);
+
+		var tbl = $("table#events");
+		$("table#events tr.event").remove();
+		for (const ev of data.events) {
+			var tr = $("<tr />").addClass("event");
+			tbl.append(tr);
+
+			tr.append($("<td />").text(ev.ago).addClass("ago"));
+			tr.append($("<td />").text(ev.label));
+
+			var op = ev.name;
+			if (ev["value"]) op += "=" + ev.value;
+			tr.append($("<td />").text(op));
+		}
+	})
+	.fail(function() {
+		// TODO: Failures here and above will be fighting over the error text.
+		showError("Network error");
+		nextRefresh = now + 5*1000;  // Try again in 5s.
+		return;
+	});
+}
+
+setInterval(refreshEvents, 1005);  // Check every 1.005s
 </script>
 
 	</body>

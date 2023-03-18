@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-func TestUptime(t *testing.T) {
+func TestRoughDuration(t *testing.T) {
 	tests := []struct {
 		x    time.Duration
 		want string
@@ -18,9 +18,9 @@ func TestUptime(t *testing.T) {
 		{51*time.Hour + 6*time.Minute, "2d3h"},
 	}
 	for _, test := range tests {
-		got := uptime(test.x)
+		got := roughDuration(test.x)
 		if got != test.want {
-			t.Errorf("uptime(%v) = %q, want %q", test.x, got, test.want)
+			t.Errorf("roughDuration(%v) = %q, want %q", test.x, got, test.want)
 		}
 	}
 }
